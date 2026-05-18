@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useLang } from "@/lib/i18n";
+import { useIsMobile } from "@/hooks/use-mobile";
+import MobileHero from "@/components/MobileHero";
+import MobileTabBar from "@/components/MobileTabBar";
+import BrandReveal from "@/components/BrandReveal";
 
-type Theme = "light" | "dark" | "noir";
+type Theme = "light" | "dark" | "warm" | "ube" | "editorial";
 type Page = "news" | "home" | "brand" | "content" | "convert" | "outcomes";
-type NewsCategory = "msme" | "facebook" | "food" | "gov";
+type NewsCategory = "msme" | "facebook" | "food" | "gov" | "events";
 
 type NewsItem = {
   id: number;
@@ -45,12 +51,33 @@ type CaptionOption = {
   text: string;
 };
 
+type TrendInfo = {
+  id: string;
+  name: string;
+  description?: string;
+  freshness?: string;
+  audience?: string;
+};
+
 type ContentResult = {
   captions: CaptionOption[];
   tip: string;
   imagePrompt: string;
   photoTip: string;
+  trend?: TrendInfo | null;
 };
+
+const TREND_OPTIONS: { id: string; name: string; freshness: string }[] = [
+  { id: "auto", name: "Auto-pick best trend", freshness: "Smart" },
+  { id: "mil-vs-genz", name: "Millennial vs Gen Z caption", freshness: "🔥 Hot" },
+  { id: "pov", name: "POV / Tell me without telling me", freshness: "Viral" },
+  { id: "carousel-hook", name: "Carousel swipe hook", freshness: "Steady" },
+  { id: "walang-basagan", name: "'Walang basagan ng trip' relatable", freshness: "Steady" },
+  { id: "before-after", name: "Before / after reveal", freshness: "Evergreen" },
+  { id: "genz-slang", name: "Pure Gen Z slang post", freshness: "🔥 Hot" },
+  { id: "tita-long", name: "Tita-friendly long caption", freshness: "Steady" },
+  { id: "reel-hook", name: "Reel-style stop-scroll hook", freshness: "🔥 Hot" },
+];
 
 type SituationId = "magkano" | "ghost" | "discount" | "firsttime" | "close" | "complaint";
 
@@ -73,6 +100,10 @@ type OutcomeItem = {
   createdAt: string;
 };
 
+type PostingDay = { day: string; abbr: string; contentType: string; tip: string };
+type WeeklyRhythm = { postsPerWeek: number; schedule: PostingDay[] };
+type VoiceRules = { useWords: string[]; avoidWords: string[]; example: string };
+
 type BrandProfile = {
   businessName: string;
   tagline: string;
@@ -84,6 +115,9 @@ type BrandProfile = {
   contentTip: string;
   palette: PaletteColor[];
   photographyMood: string;
+  heroImage?: string | null;
+  weeklyRhythm?: WeeklyRhythm;
+  voiceRules?: VoiceRules;
 };
 
 const pageMeta: Record<Page, [string, string]> = {
@@ -132,15 +166,42 @@ const newsItems: NewsItem[] = [
       "Local LGU support programs now include short modules on compliance, costing, and digital selling basics for home kitchen operators.",
     tags: ["Compliance", "Free training"],
   },
+  {
+    id: 5,
+    category: "events",
+    categoryLabel: "Events near me",
+    headline: "Fiesta sa San Pedro, Makati — May 15 weekend",
+    summary:
+      "Barangay fiesta expecting 2,000+ foot traffic. Pre-order posts for handa platters and pasalubong bundles tend to spike 3–5 days before. Drop a 'reserve your bilao' caption now.",
+    tags: ["Fiesta", "Pre-orders", "Makati"],
+  },
+  {
+    id: 6,
+    category: "events",
+    categoryLabel: "Events near me",
+    headline: "Mercato Centrale weekend market — BGC, May 17–18",
+    summary:
+      "Open slots for home-based food sellers. Even without a booth, post a 'we're inspired by BGC weekend cravings' angle and ride the search interest.",
+    tags: ["Expo", "BGC", "Weekend"],
+  },
+  {
+    id: 7,
+    category: "events",
+    categoryLabel: "Events near me",
+    headline: "Sikat Pinoy Food Expo at SMX — May 22–25",
+    summary:
+      "National MSME food expo. Use it as a content hook: behind-the-scenes of your kitchen, your origin story, or a 'kung nasa expo kami…' reel.",
+    tags: ["Expo", "DTI", "Content hook"],
+  },
 ];
 
-const navItems: Array<{ page: Page; label: string; icon: string; comingSoon?: boolean }> = [
-  { page: "news", label: "Trending Now", icon: "◐" },
-  { page: "home", label: "Dashboard", icon: "◈" },
-  { page: "brand", label: "Brand Builder", icon: "◇" },
-  { page: "content", label: "Content Engine", icon: "✦" },
-  { page: "convert", label: "Conversion Kit", icon: "◎" },
-  { page: "outcomes", label: "Outcomes Tracker", icon: "◉", comingSoon: true },
+const navItems: Array<{ page: Page; labelKey: string; icon: string; comingSoon?: boolean }> = [
+  { page: "news", labelKey: "nav.news", icon: "◐" },
+  { page: "home", labelKey: "nav.home", icon: "◈" },
+  { page: "brand", labelKey: "nav.brand", icon: "◇" },
+  { page: "content", labelKey: "nav.content", icon: "✦" },
+  { page: "convert", labelKey: "nav.convert", icon: "◎" },
+  { page: "outcomes", labelKey: "nav.outcomes", icon: "◉", comingSoon: true },
 ];
 
 const vibeOptions: VibeOption[] = [
@@ -259,6 +320,20 @@ function hexToRgba(hex: string, alpha: number) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+function contrastText(hex: string) {
+  const n = (hex || "").replace("#", "");
+  if (n.length !== 6) return "#1a1a1a";
+  const toLin = (c: number) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  const r = toLin(parseInt(n.slice(0, 2), 16));
+  const g = toLin(parseInt(n.slice(2, 4), 16));
+  const b = toLin(parseInt(n.slice(4, 6), 16));
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return L > 0.55 ? "#1a1a1a" : "#ffffff";
+}
+
 function suggestBusinessName(product: string, vibe: string) {
   const lower = product.toLowerCase();
   if (lower.includes("adobo")) {
@@ -311,6 +386,19 @@ function generateBrandProfile(
     ),
     palette: palette.colors,
     photographyMood: palette.photographyMood,
+    weeklyRhythm: {
+      postsPerWeek: 3,
+      schedule: [
+        { day: "Monday", abbr: "Mon", contentType: "Product story", tip: `Share the story behind today's dish` },
+        { day: "Wednesday", abbr: "Wed", contentType: "Customer reaction", tip: `Post a buyer message or feedback` },
+        { day: "Friday", abbr: "Fri", contentType: "Weekend promo", tip: `Open pre-orders with a limited-slot hook` },
+      ],
+    },
+    voiceRules: {
+      useWords: ["kain na", "lutong bahay", "sariwang gawa", "pampamilya", "sulit"],
+      avoidWords: ["premium", "world-class", "order now"],
+      example: `Mainit pa 'to at bagong luto — para sa pamilya mo na gustong kumain ng tunay na lutong bahay.`,
+    },
   };
 }
 
@@ -319,10 +407,15 @@ function toDataUriSvg(svg: string) {
 }
 
 function App() {
-  const [theme, setTheme] = useState<Theme>("noir");
-  const [page, setPage] = useState<Page>("news");
+  const { lang, setLang, t } = useLang();
+  const isMobile = useIsMobile();
+  const [theme, setTheme] = useState<Theme>("editorial");
+  const [page, setPage] = useState<Page>(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches ? "home" : "news"
+  );
   const [newsFilter, setNewsFilter] = useState<"all" | NewsCategory>("all");
   const [brandSaved, setBrandSaved] = useState(false);
+  const [brandLoading, setBrandLoading] = useState(false);
   const [brandProfile, setBrandProfile] = useState<BrandProfile | null>(null);
   const [postsGenerated, setPostsGenerated] = useState(0);
   const [scriptsGenerated, setScriptsGenerated] = useState(0);
@@ -345,13 +438,32 @@ function App() {
   const [contentType, setContentType] = useState<ContentType>("caption");
   const [contentLoading, setContentLoading] = useState(false);
   const [contentResult, setContentResult] = useState<ContentResult | null>(null);
-  const [genMode, setGenMode] = useState<"ai" | "tip">("ai");
+  const [trendMode, setTrendMode] = useState(true);
+  const [trendId, setTrendId] = useState<string>("auto");
+  // image generation runs automatically as part of handleGenerateContent
   const [generatedImage, setGeneratedImage] = useState<string>("");
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  const [imageAction, setImageAction] = useState<"generate" | "use-direct" | "enhance">("generate");
   const [situation, setSituation] = useState<SituationId>("magkano");
   const [convertContext, setConvertContext] = useState("");
   const [convertLoading, setConvertLoading] = useState(false);
   const [scriptResult, setScriptResult] = useState<ScriptResult | null>(null);
   const [outcomes, setOutcomes] = useState<OutcomeItem[]>([]);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMobileNavOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [mobileNavOpen]);
+
+  const goToPage = (p: Page) => { setPage(p); setMobileNavOpen(false); };
 
   useEffect(() => {
     document.body.dataset.theme = theme;
@@ -366,7 +478,11 @@ function App() {
 
   const selectedPalette = palettesByVisualStyle[brandForm.visualStyle] ?? palettesByVisualStyle.homey;
   const computedProfile = useMemo(() => generateBrandProfile(brandForm, selectedPalette), [brandForm, selectedPalette]);
-  const activeBrandProfile = brandSaved && brandProfile ? brandProfile : computedProfile;
+  // Merge computedProfile as base so newly added optional fields (weeklyRhythm, voiceRules)
+  // are always present even when brandProfile was saved before those fields existed.
+  const activeBrandProfile: BrandProfile = brandSaved && brandProfile
+    ? { ...computedProfile, ...brandProfile }
+    : computedProfile;
   const pendingOutcomes = outcomes.filter((item) => item.status === "pending");
   const loggedOutcomes = outcomes.filter((item) => item.status === "logged");
   const yesCount = loggedOutcomes.filter((item) => item.feedback === "yes").length;
@@ -386,11 +502,16 @@ function App() {
       : "",
   ].filter(Boolean);
 
-  const previewName = brandForm.businessName.trim() || "Your Business Name";
+  const previewName = brandForm.businessName.trim() || activeBrandProfile.businessName || "Your Business Name";
   const previewOneLiner = activeBrandProfile.oneLiner;
   const previewPrimary = activeBrandProfile.palette[0]?.hex ?? "#7B5EA7";
   const previewSecondary = activeBrandProfile.palette[1]?.hex ?? "#5E7A4D";
   const previewBackground = activeBrandProfile.palette[2]?.hex ?? "#F8F5FF";
+  const previewAccent = activeBrandProfile.palette[3]?.hex ?? activeBrandProfile.palette[1]?.hex ?? "#6B3B2A";
+
+  // Try to extract a "deliver / located at" snippet from the product field
+  const deliveryMatch = brandForm.product.match(/(?:deliver(?:ing|y)?|located|available|serving)[^.]{0,80}/i);
+  const previewLocation = (deliveryMatch?.[0]?.trim() || "Fresh daily · Order ahead").toUpperCase().slice(0, 60);
 
   function updateBrandField<K extends keyof typeof brandForm>(key: K, value: (typeof brandForm)[K]) {
     setBrandForm((prev) => ({ ...prev, [key]: value }));
@@ -399,10 +520,74 @@ function App() {
     }
   }
 
-  function handleBuildBrandProfile() {
-    const generated = generateBrandProfile(brandForm, selectedPalette);
-    setBrandProfile(generated);
-    setBrandSaved(true);
+  async function handleBuildBrandProfile() {
+    setBrandLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("generate-brand-profile", {
+        body: {
+          product: brandForm.product,
+          buyer: brandForm.buyer,
+          diff: brandForm.diff,
+          why: brandForm.why,
+          vibe: brandForm.vibe,
+          surprise: brandForm.surprise,
+          businessName: brandForm.businessName,
+          visualStyle: visualStyles.find((s) => s.id === brandForm.visualStyle)?.name ?? brandForm.visualStyle,
+        },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      if (!data?.palette?.length) throw new Error("Incomplete profile");
+
+      const profile: BrandProfile = {
+        businessName: data.businessName,
+        tagline: data.tagline,
+        oneLiner: data.oneLiner,
+        targetBuyer: data.targetBuyer,
+        uniqueValue: data.uniqueValue,
+        brandVoice: data.brandVoice,
+        emotionalHook: data.emotionalHook,
+        contentTip: data.contentTip,
+        photographyMood: data.photographyMood,
+        palette: data.palette,
+        heroImage: data.heroImage ?? null,
+        weeklyRhythm: data.weeklyRhythm ?? undefined,
+        voiceRules: data.voiceRules ?? undefined,
+      };
+      setBrandProfile(profile);
+      setBrandSaved(true);
+      try {
+        localStorage.setItem("tindaph_brand_profile", JSON.stringify({
+          brandName: profile.businessName,
+          personalityTags: profile.brandVoice.split(/[,/&]| and /i).map((s) => s.trim()).filter(Boolean),
+          toneWords: profile.voiceRules?.useWords ?? [],
+          avoidWords: profile.voiceRules?.avoidWords ?? [],
+          contentPillars: profile.weeklyRhythm?.schedule.map((d) => d.contentType) ?? [],
+          postingRhythm: profile.weeklyRhythm ?? null,
+          positioningStatement: profile.oneLiner,
+        }));
+      } catch (_) { /* storage unavailable */ }
+    } catch (e) {
+      console.error("generate-brand-profile failed:", e);
+      const msg = e instanceof Error ? e.message : "Generation failed";
+      window.alert(`${msg}. Showing offline draft instead.`);
+      const generated = generateBrandProfile(brandForm, selectedPalette);
+      setBrandProfile(generated);
+      setBrandSaved(true);
+      try {
+        localStorage.setItem("tindaph_brand_profile", JSON.stringify({
+          brandName: generated.businessName,
+          personalityTags: generated.brandVoice.split(/[,/&]| and /i).map((s) => s.trim()).filter(Boolean),
+          toneWords: generated.voiceRules?.useWords ?? [],
+          avoidWords: generated.voiceRules?.avoidWords ?? [],
+          contentPillars: generated.weeklyRhythm?.schedule.map((d) => d.contentType) ?? [],
+          postingRhythm: generated.weeklyRhythm ?? null,
+          positioningStatement: generated.oneLiner,
+        }));
+      } catch (_) { /* storage unavailable */ }
+    } finally {
+      setBrandLoading(false);
+    }
   }
 
   function addPendingOutcome(type: OutcomeType, text: string, context?: string) {
@@ -492,7 +677,27 @@ function App() {
     setGeneratedImage(toDataUriSvg(svg));
   }
 
-  function handleGenerateContent() {
+  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const blobUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 900;
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      setUploadedImage(canvas.toDataURL("image/jpeg", 0.82));
+      setImageAction("use-direct");
+      URL.revokeObjectURL(blobUrl);
+    };
+    img.src = blobUrl;
+    e.target.value = "";
+  }
+
+  async function handleGenerateContent() {
     const product = contentProduct.trim();
     if (!product) {
       window.alert("Please describe what you are posting about.");
@@ -500,12 +705,73 @@ function App() {
     }
 
     setContentLoading(true);
-    const result = generateContentResult(product);
-    setContentResult(result);
     setGeneratedImage("");
-    setPostsGenerated((prev) => prev + 3);
-    addPendingOutcome("caption", result.captions[0].text, contentType);
-    setContentLoading(false);
+    setContentResult(null);
+
+    // Optimistic local fallback so something always renders
+    const fallback = generateContentResult(product);
+
+    try {
+      const { data, error } = await supabase.functions.invoke("generate-content", {
+        body: {
+          product,
+          tone: contentTone,
+          contentType,
+          trendMode,
+          trendId,
+          brand: {
+            businessName: activeBrandProfile.businessName,
+            oneLiner: activeBrandProfile.oneLiner,
+            brandVoice: activeBrandProfile.brandVoice,
+            photographyMood: activeBrandProfile.photographyMood,
+            visualStyle:
+              visualStyles.find((s) => s.id === brandForm.visualStyle)?.name ?? "Homey & natural",
+            palette: activeBrandProfile.palette.map((p) => p.hex),
+            voiceRules: activeBrandProfile.voiceRules ?? null,
+          },
+          uploadedImage: imageAction === "enhance" && uploadedImage ? uploadedImage : null,
+          imageAction: uploadedImage ? imageAction : "generate",
+        },
+      });
+
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+
+      const result: ContentResult = {
+        captions: (data?.captions?.length ? data.captions : fallback.captions) as CaptionOption[],
+        tip: data?.tip || fallback.tip,
+        imagePrompt: data?.imagePrompt || fallback.imagePrompt,
+        photoTip: data?.photoTip || fallback.photoTip,
+        trend: data?.trend ?? null,
+      };
+      setContentResult(result);
+      if (imageAction === "use-direct" && uploadedImage) {
+        setGeneratedImage(uploadedImage);
+      } else if (data?.imageUrl) {
+        setGeneratedImage(data.imageUrl);
+      } else if (imageAction === "enhance" && uploadedImage) {
+        // Enhancement failed gracefully — fall back to the original upload
+        setGeneratedImage(uploadedImage);
+      } else {
+        generateImagePreview(result.imagePrompt);
+      }
+      setPostsGenerated((prev) => prev + 3);
+      addPendingOutcome("caption", result.captions[0].text, contentType);
+    } catch (e) {
+      console.error("generate-content failed:", e);
+      const msg = e instanceof Error ? e.message : "Generation failed";
+      window.alert(`${msg}. Showing offline draft instead.`);
+      setContentResult(fallback);
+      if (uploadedImage) {
+        setGeneratedImage(uploadedImage);
+      } else {
+        generateImagePreview(fallback.imagePrompt);
+      }
+      setPostsGenerated((prev) => prev + 3);
+      addPendingOutcome("caption", fallback.captions[0].text, contentType);
+    } finally {
+      setContentLoading(false);
+    }
   }
 
   function generateScriptResult(currentSituation: SituationId, extraContext: string): ScriptResult {
@@ -545,220 +811,336 @@ function App() {
     };
   }
 
-  function handleGenerateScript() {
+  async function handleGenerateScript() {
     setConvertLoading(true);
-    const result = generateScriptResult(situation, convertContext);
-    setScriptResult(result);
-    setScriptsGenerated((prev) => prev + 1);
-    addPendingOutcome("script", result.script, situation);
-    setConvertLoading(false);
+    try {
+      const { data, error } = await supabase.functions.invoke("generate-script", {
+        body: {
+          situation,
+          extraContext: convertContext,
+          brand: {
+            businessName: activeBrandProfile.businessName,
+            oneLiner: activeBrandProfile.oneLiner,
+            brandVoice: activeBrandProfile.brandVoice,
+            targetBuyer: activeBrandProfile.targetBuyer,
+            uniqueValue: activeBrandProfile.uniqueValue,
+            voiceRules: activeBrandProfile.voiceRules ?? null,
+          },
+        },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      if (!data?.script) throw new Error("No script returned");
+      const result: ScriptResult = {
+        script: data.script,
+        why: data.why || "",
+        avoid: data.avoid || "",
+      };
+      setScriptResult(result);
+      setScriptsGenerated((prev) => prev + 1);
+      addPendingOutcome("script", result.script, situation);
+    } catch (e) {
+      console.error("generate-script failed:", e);
+      const fallback = generateScriptResult(situation, convertContext);
+      setScriptResult(fallback);
+      setScriptsGenerated((prev) => prev + 1);
+      addPendingOutcome("script", fallback.script, situation);
+      alert("AI is unavailable right now. Showing a template script instead.");
+    } finally {
+      setConvertLoading(false);
+    }
   }
 
   return (
     <>
       <div className="app">
-        <nav className="sidebar">
+        <nav className={mobileNavOpen ? "sidebar open" : "sidebar"}>
           <div className="sidebar-brand">
             <div className="brand-logo-row">
-              <div className="brand-icon">●</div>
+              <img src="/logo.png" alt="Tinda.ph logo" className="brand-icon-img" />
               <div className="brand-wordmark">
                 Tinda<span>.</span>ph
               </div>
             </div>
-            <div className="brand-sub">Beta · Knowledge Platform</div>
           </div>
 
           <div className="user-chip">
-            <div className="user-avatar">M</div>
-            <div>
-              <div className="user-name">Maria Lim</div>
-              <div className="user-role">Home-based food seller</div>
-            </div>
+            <div className="user-avatar">G</div>
+            <div className="user-name">Grace</div>
           </div>
 
           <div className="nav">
-            <div className="nav-group-label">Platform</div>
             {navItems.map((item) => (
               <button
                 key={item.page}
                 className={page === item.page ? "nav-btn active" : "nav-btn"}
-                onClick={() => setPage(item.page)}
+                onClick={() => goToPage(item.page)}
                 type="button"
               >
-                <span className="nav-icon">{item.icon}</span>
-                {item.label}
+                {t(item.labelKey)}
                 {item.comingSoon && <span className="nav-badge">Beta</span>}
               </button>
             ))}
           </div>
 
-          <div className="sidebar-foot">
-            Powered by AI
-            <br />
-            Built for Filipino sellers
-            <br />
-            Tinda.ph · v0.1 Beta
+          <div className="sidebar-settings">
+            <div className="sidebar-settings-title">{t("settings.title")}</div>
+            <label className="sidebar-setting-row">
+              <span className="sidebar-setting-label">{t("settings.lang")}</span>
+              <select
+                value={lang}
+                onChange={(e) => setLang(e.target.value as "taglish" | "english")}
+                aria-label={t("settings.lang")}
+              >
+                <option value="taglish">{t("lang.taglish")}</option>
+                <option value="english">{t("lang.english")}</option>
+              </select>
+            </label>
+            <label className="sidebar-setting-row">
+              <span className="sidebar-setting-label">{t("settings.theme")}</span>
+              <select
+                value={theme}
+                onChange={(e) => setTheme(e.target.value as Theme)}
+                aria-label={t("settings.theme")}
+              >
+                <option value="editorial">{t("theme.editorial")}</option>
+                <option value="light">{t("theme.light")}</option>
+                <option value="dark">{t("theme.dark")}</option>
+                <option value="warm">{t("theme.warm")}</option>
+                <option value="ube">{t("theme.ube")}</option>
+              </select>
+            </label>
           </div>
+
+          <div className="sidebar-foot">v0.1 Beta</div>
         </nav>
+
+        {mobileNavOpen && (
+          <div
+            className="nav-scrim"
+            role="button"
+            aria-label="Close navigation"
+            onClick={() => setMobileNavOpen(false)}
+          />
+        )}
 
         <div className="main">
           <div className="topbar">
             <div className="topbar-left">
-              <span className="topbar-page">{pageMeta[page][0]}</span>
-              <span className="topbar-sep">·</span>
-              <span className="topbar-crumb">{pageMeta[page][1]}</span>
+              <button
+                type="button"
+                className="nav-toggle"
+                aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
+                aria-expanded={mobileNavOpen}
+                onClick={() => setMobileNavOpen((v) => !v)}
+              >
+                <span /><span /><span />
+              </button>
+              
             </div>
-            <div className="topbar-right">
-              <div className="ai-pill">
-                <div className="ai-dot" /> AI Ready
-              </div>
-            </div>
+            <div className="topbar-right" />
           </div>
 
           <div className="body">
             <div className="content-area">
               <section className={page === "news" ? "page active" : "page"}>
                 <div className="page-header">
-                  <div className="page-eyebrow">
-                    <span className="eyebrow-dot" /> Trending Now · Live feed
-                  </div>
                   <div className="page-title">
-                    Magandang umaga,<br />
-                    <em>Maria.</em>
+                    Magandang umaga, <em>Grace.</em>
                   </div>
-                  <div className="page-sub">Here's what's moving in Philippine food selling today.</div>
+                  <div className="page-sub">What's moving in Philippine food selling today.</div>
                 </div>
 
                 <div className="news-filters">
-                  <button
-                    className={newsFilter === "all" ? "tone-pill on" : "tone-pill"}
-                    onClick={() => setNewsFilter("all")}
-                    type="button"
-                  >
-                    All topics
-                  </button>
-                  <button
-                    className={newsFilter === "msme" ? "tone-pill on" : "tone-pill"}
-                    onClick={() => setNewsFilter("msme")}
-                    type="button"
-                  >
-                    MSME news
-                  </button>
-                  <button
-                    className={newsFilter === "facebook" ? "tone-pill on" : "tone-pill"}
-                    onClick={() => setNewsFilter("facebook")}
-                    type="button"
-                  >
-                    Facebook selling
-                  </button>
-                  <button
-                    className={newsFilter === "food" ? "tone-pill on" : "tone-pill"}
-                    onClick={() => setNewsFilter("food")}
-                    type="button"
-                  >
-                    Food trends
-                  </button>
-                  <button
-                    className={newsFilter === "gov" ? "tone-pill on" : "tone-pill"}
-                    onClick={() => setNewsFilter("gov")}
-                    type="button"
-                  >
-                    Government programs
-                  </button>
+                  {[
+                    { id: "all", label: "All topics" },
+                    { id: "events", label: "📍 Events near me" },
+                    { id: "msme", label: "MSME news" },
+                    { id: "facebook", label: "Facebook selling" },
+                    { id: "food", label: "Food trends" },
+                    { id: "gov", label: "Government programs" },
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      className={newsFilter === f.id ? "tone-pill on" : "tone-pill"}
+                      onClick={() => setNewsFilter(f.id as "all" | NewsCategory)}
+                      type="button"
+                    >
+                      {f.label}
+                    </button>
+                  ))}
                 </div>
 
                 {visibleNews.map((item) => (
                   <article className="news-card" key={item.id}>
-                    <div className="news-card-top">
-                      <span className={`news-category cat-${item.category}`}>{item.categoryLabel}</span>
-                    </div>
+                    <div className="news-cat">{item.categoryLabel}</div>
                     <div className="news-headline">{item.headline}</div>
                     <div className="news-summary">{item.summary}</div>
-                    <div>
-                      {item.tags.map((tag) => (
-                        <span className="news-trend-tag" key={tag}>
-                          {tag}
-                        </span>
-                      ))}
+                    <div className="news-action">
+                      {item.category === "events" ? "Create a post around this event →" : "Turn into a post idea →"}
                     </div>
-                    <div className="news-action">Turn into a post idea →</div>
                   </article>
                 ))}
+
+                <div className="inline-insight">
+                  <strong>Today's insight:</strong> MSMEs that post 3–5× per week on Facebook get
+                  {" "}<strong>2.4× more</strong> DM inquiries than pages posting less often.
+                </div>
               </section>
 
               <section className={page === "home" ? "page active" : "page"}>
-                <div className="page-header">
-                  <div className="page-eyebrow">
-                    <span className="eyebrow-dot" /> Dashboard
+                {isMobile ? (
+                  <MobileHero
+                    t={t}
+                    userName="Grace"
+                    postsGenerated={postsGenerated}
+                    scriptsGenerated={scriptsGenerated}
+                    brandSaved={brandSaved}
+                    trending={newsItems.slice(0, 5).map((n) => ({
+                      id: n.id,
+                      categoryLabel: n.categoryLabel,
+                      headline: n.headline,
+                    }))}
+                    onPrimary={() => setPage(brandSaved ? "content" : "brand")}
+                    onShortcut={(k) =>
+                      setPage(k === "caption" ? "content" : k === "brand" ? "brand" : "convert")
+                    }
+                    onOpenNews={() => setPage("news")}
+                    onNewPost={() => setPage("content")}
+                    onScripts={() => setPage("convert")}
+                  />
+                ) : (
+                  <div className="page-header">
+                    <div className="page-title">
+                      {t("home.greet.morning")}, <em>Grace.</em>
+                    </div>
+                    <div className="page-sub">{t("page.home.sub")}</div>
                   </div>
-                  <div className="page-title">
-                    Magandang umaga,<br />
-                    <em>Maria.</em>
+                )}
+
+                {!isMobile && (
+                <div className="stat-inline">
+                  <span className="stat-chip">
+                    <span className="stat-chip-label">Brand</span>
+                    <span className="stat-chip-value">{brandSaved ? "Ready" : "Not set"}</span>
+                  </span>
+                  <span className="stat-chip">
+                    <span className="stat-chip-value">{postsGenerated}</span>
+                    <span className="stat-chip-label">posts</span>
+                  </span>
+                  <span className="stat-chip">
+                    <span className="stat-chip-value">{scriptsGenerated}</span>
+                    <span className="stat-chip-label">scripts</span>
+                  </span>
+                  <span className="stat-chip">
+                    <span className="stat-chip-value">5-day 🔥</span>
+                    <span className="stat-chip-label">streak</span>
+                  </span>
+                </div>
+                )}
+
+                {!isMobile && (<>
+                <div className="focus-card">
+                  <div className="focus-eyebrow">Today's focus</div>
+                  <div className="focus-title">
+                    {brandSaved
+                      ? "Post a Tuesday merienda teaser by 4 PM"
+                      : "Finish your Brand Builder — 6 quick questions"}
                   </div>
-                  <div className="page-sub">Your brand knowledge platform. What do you need today?</div>
+                  <div className="focus-sub">
+                    {brandSaved
+                      ? "Tuesdays 3–5 PM is your top engagement window. Use your 'lola's recipe' angle and end with a question."
+                      : "Once your brand is saved, every caption and script will sound like you — automatically."}
+                  </div>
+                  <button
+                    className="focus-btn"
+                    onClick={() => setPage(brandSaved ? "content" : "brand")}
+                    type="button"
+                  >
+                    {brandSaved ? "Open Content Engine →" : "Start Brand Builder →"}
+                  </button>
                 </div>
 
-                <div className="stat-row">
-                  <div className="stat-card">
-                    <div className="stat-icon-wrap">◇</div>
-                    <div>
-                      <div className="stat-num">{brandSaved ? "Ready" : "-"}</div>
-                      <div className="stat-lbl">Brand profile</div>
+                <div className="dash-split">
+                  <article className="dash-panel">
+                    <div className="dash-panel-eyebrow">This week's plan</div>
+                    <div className="dash-panel-title">3 posts, 1 story, 1 reel</div>
+                    <ul className="weekplan">
+                      <li className="weekplan-row done">
+                        <span className="wp-day">Mon</span>
+                        <span className="wp-task">Behind-the-scenes: morning prep</span>
+                        <span className="wp-status">Posted</span>
+                      </li>
+                      <li className="weekplan-row today">
+                        <span className="wp-day">Tue</span>
+                        <span className="wp-task">Merienda teaser + question hook</span>
+                        <span className="wp-status">Today</span>
+                      </li>
+                      <li className="weekplan-row">
+                        <span className="wp-day">Thu</span>
+                        <span className="wp-task">Customer kwento (testimonial)</span>
+                        <span className="wp-status">Draft</span>
+                      </li>
+                      <li className="weekplan-row">
+                        <span className="wp-day">Fri</span>
+                        <span className="wp-task">Weekend pre-order open</span>
+                        <span className="wp-status">Plan</span>
+                      </li>
+                      <li className="weekplan-row">
+                        <span className="wp-day">Sat</span>
+                        <span className="wp-task">Reel: ulam reveal</span>
+                        <span className="wp-status">Plan</span>
+                      </li>
+                    </ul>
+                  </article>
+
+                  <article
+                    className="dash-panel event-panel"
+                    onClick={() => { setPage("news"); setNewsFilter("events"); }}
+                  >
+                    <div className="dash-panel-eyebrow">📍 Event near you</div>
+                    <div className="dash-panel-title">Fiesta sa San Pedro — May 15</div>
+                    <div className="dash-panel-body">
+                      Barangay fiesta in Makati expecting 2,000+ foot traffic. Drop a "reserve your bilao" pre-order post 3 days before to ride the spike.
                     </div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-icon-wrap">✦</div>
-                    <div>
-                      <div className="stat-num">{postsGenerated}</div>
-                      <div className="stat-lbl">Posts generated</div>
-                    </div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="stat-icon-wrap">◎</div>
-                    <div>
-                      <div className="stat-num">{scriptsGenerated}</div>
-                      <div className="stat-lbl">Scripts used</div>
-                    </div>
-                  </div>
+                    <div className="dash-panel-cta">See all events near me →</div>
+                  </article>
                 </div>
 
-                <div className="dash-grid">
+                <article className="dash-panel mt-3">
+                  <div className="dash-panel-eyebrow">Recent activity</div>
+                  <ul className="activity">
+                    <li><span className="act-dot" /> Generated 3 captions for "Adobo combo" — 2h ago</li>
+                    <li><span className="act-dot" /> Saved a hagglers script — yesterday</li>
+                    <li><span className="act-dot" /> Updated brand voice to "Warm &amp; homey" — 2 days ago</li>
+                    <li><span className="act-dot" /> Logged 4 orders from Sunday post — 3 days ago</li>
+                  </ul>
+                </article>
+
+                <div className="dash-grid mt-3">
                   <article className="dash-card" onClick={() => setPage("brand")}>
-                    <div className="dash-card-ic">◇</div>
-                    <div className="dash-card-arrow">↗</div>
+                    <div className="dash-card-arrow">→</div>
                     <div className="dash-card-title">Brand Builder</div>
                     <div className="dash-card-sub">Set your foundation once. Powers everything.</div>
                   </article>
                   <article className="dash-card" onClick={() => setPage("content")}>
-                    <div className="dash-card-ic">✦</div>
-                    <div className="dash-card-arrow">↗</div>
+                    <div className="dash-card-arrow">→</div>
                     <div className="dash-card-title">Content Engine</div>
                     <div className="dash-card-sub">Generate captions in your voice.</div>
                   </article>
                   <article className="dash-card" onClick={() => setPage("convert")}>
-                    <div className="dash-card-ic">◎</div>
-                    <div className="dash-card-arrow">↗</div>
+                    <div className="dash-card-arrow">→</div>
                     <div className="dash-card-title">Conversion Kit</div>
                     <div className="dash-card-sub">The right words for every buyer situation.</div>
                   </article>
                 </div>
-
-                <div className="tip-banner">
-                  <div className="tip-banner-icon">💡</div>
-                  <div>
-                    <div className="tip-banner-label">Tip of the day</div>
-                    <div className="tip-banner-text">
-                      Posts ending with a question get <strong>3x more comments</strong> on Facebook. Try closing with
-                      <strong> "Gusto mo bang subukan?"</strong> and reply fast to each comment.
-                    </div>
-                  </div>
-                </div>
+                </>)}
               </section>
 
               <section className={page === "brand" ? "page active" : "page"}>
                 <div className="page-header">
                   <div className="page-eyebrow">
-                    <span className="eyebrow-dot" /> Brand Builder · Module 1
+                    <span className="eyebrow-dot" /> Brand Builder
                   </div>
                   <div className="page-title">
                     Build your<br />
@@ -886,61 +1268,27 @@ function App() {
                   </div>
                 </div>
 
-                <button className="btn btn-primary btn-full" onClick={handleBuildBrandProfile} type="button">
-                  Build my brand profile + color palette
+                <button className="btn btn-primary btn-full" onClick={handleBuildBrandProfile} type="button" disabled={brandLoading}>
+                  {brandLoading ? "Building your brand profile…" : "Build my brand profile + color palette"}
                 </button>
+
+                {brandLoading && (
+                  <div className="loading show">
+                    <div className="spinner" />
+                    <span className="loading-text">Crafting your positioning, voice, and palette…</span>
+                  </div>
+                )}
 
                 {brandSaved && (
                   <div className="output show">
-                    <hr className="divider" />
-                    <div className="output-label">Your brand profile</div>
-                    <div className="palette-box show">
-                      <div className="palette-box-label">Your brand color palette</div>
-                      <div className="palette-strip">
-                        {activeBrandProfile.palette.map((color) => (
-                          <div className="palette-swatch-wrap" key={`${color.role}-${color.hex}`}>
-                            <div className="palette-swatch" style={{ background: color.hex }} title={color.name} />
-                            <div className="palette-role">{color.role}</div>
-                            <div className="palette-hex">{color.hex}</div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="palette-mood">{activeBrandProfile.photographyMood}</div>
-                    </div>
-                    <div className="profile-grid">
-                      <div className="pf hero span2">
-                        <div className="pf-label">Business name</div>
-                        <div className="pf-value">{activeBrandProfile.businessName}</div>
-                        <div className="pf-tagline">"{activeBrandProfile.tagline}"</div>
-                      </div>
-                      <div className="pf span2">
-                        <div className="pf-label">One-liner</div>
-                        <div className="pf-value">{activeBrandProfile.oneLiner}</div>
-                      </div>
-                      <div className="pf">
-                        <div className="pf-label">Target buyer</div>
-                        <div className="pf-value">{activeBrandProfile.targetBuyer}</div>
-                      </div>
-                      <div className="pf">
-                        <div className="pf-label">Differentiator</div>
-                        <div className="pf-value">{activeBrandProfile.uniqueValue}</div>
-                      </div>
-                      <div className="pf">
-                        <div className="pf-label">Brand voice</div>
-                        <div className="pf-value">{activeBrandProfile.brandVoice}</div>
-                      </div>
-                      <div className="pf span2">
-                        <div className="pf-label">Founder story</div>
-                        <div className="pf-value">{activeBrandProfile.emotionalHook}</div>
-                      </div>
-                      <div className="pf span2">
-                        <div className="pf-label">Content tip</div>
-                        <div className="pf-value">{activeBrandProfile.contentTip}</div>
-                      </div>
-                    </div>
-                    <button className="btn btn-primary btn-full" onClick={() => setPage("content")} style={{ marginTop: 12 }} type="button">
-                      Now generate your first posts
-                    </button>
+                    <BrandReveal
+                      profile={activeBrandProfile}
+                      visualStyleName={visualStyles.find((s) => s.id === brandForm.visualStyle)?.name}
+                      onGeneratePosts={() => setPage("content")}
+                      onCreateCover={() => setPage("content")}
+                      onCreateMenu={() => setPage("content")}
+                      onCreatePhotoPrompts={() => setPage("content")}
+                    />
                   </div>
                 )}
               </section>
@@ -948,7 +1296,7 @@ function App() {
               <section className={page === "content" ? "page active" : "page"}>
                 <div className="page-header">
                   <div className="page-eyebrow">
-                    <span className="eyebrow-dot" /> Content Engine · Module 2
+                    <span className="eyebrow-dot" /> Content Engine
                   </div>
                   <div className="page-title">
                     Generate posts<br />
@@ -1009,61 +1357,304 @@ function App() {
                       ))}
                     </div>
                   </div>
+
+                  <div className="field mb-0" style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border, rgba(0,0,0,0.08))" }}>
+                    <div className="field-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                      <span>🔥 Trend-aware mode</span>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
+                        <input type="checkbox" checked={trendMode} onChange={(e) => setTrendMode(e.target.checked)} />
+                        <span>{trendMode ? "On" : "Off"}</span>
+                      </label>
+                    </div>
+                    {trendMode && (
+                      <>
+                        <select
+                          value={trendId}
+                          onChange={(e) => setTrendId(e.target.value)}
+                          style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border, rgba(0,0,0,0.15))", background: "transparent", color: "inherit", fontSize: 14 }}
+                        >
+                          {TREND_OPTIONS.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name} {t.freshness ? `· ${t.freshness}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>
+                          We'll match the latest FB posting trends (Millennial vs Gen Z dual captions, POV hooks, Taglish slang, etc.) to your brand voice.
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
 
+                {/* Photo upload */}
+                <div className="photo-upload-section">
+                  <div className="photo-upload-header">
+                    <span className="photo-upload-label">📸 Your product photo</span>
+                    <label className="photo-upload-btn" htmlFor="content-photo-upload">
+                      {uploadedImage ? "Change photo" : "Upload photo"}
+                      <input
+                        id="content-photo-upload"
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={handleImageUpload}
+                      />
+                    </label>
+                  </div>
+
+                  {uploadedImage && (
+                    <div className="photo-upload-preview">
+                      <img src={uploadedImage} alt="Your product" className="photo-upload-img" />
+                      <div className="photo-upload-actions">
+                        <button
+                          type="button"
+                          className={`photo-action-btn ${imageAction === "use-direct" ? "active" : ""}`}
+                          onClick={() => setImageAction("use-direct")}
+                        >
+                          Use as-is
+                        </button>
+                        <button
+                          type="button"
+                          className={`photo-action-btn ${imageAction === "enhance" ? "active" : ""}`}
+                          onClick={() => setImageAction("enhance")}
+                        >
+                          Enhance with AI
+                        </button>
+                        <button
+                          type="button"
+                          className="photo-remove-btn"
+                          onClick={() => { setUploadedImage(null); setImageAction("generate"); }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <p className="photo-upload-hint">
+                        {imageAction === "use-direct"
+                          ? "Your photo will be used directly as the post image."
+                          : "AI will enhance your photo to match your brand style."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {brandSaved && (
+                  <div className="brand-profile-pill">
+                    <span className="brand-profile-pill-dot" />
+                    Using your brand profile
+                  </div>
+                )}
+
                 <button className="btn btn-primary btn-full" onClick={handleGenerateContent} type="button">
-                  Generate caption + image
+                  {uploadedImage && imageAction === "use-direct" ? "Generate caption" : "Generate caption + image"}
                 </button>
 
                 <div className={contentLoading ? "loading show" : "loading"}>
                   <div className="spinner" />
-                  <span className="loading-text">Writing your captions and preparing your image...</span>
+                  <span className="loading-text">
+                    {uploadedImage && imageAction === "use-direct"
+                      ? "Writing your captions..."
+                      : uploadedImage && imageAction === "enhance"
+                      ? "Writing your captions and enhancing your photo..."
+                      : "Writing your captions and preparing your image..."}
+                  </span>
                 </div>
 
                 {contentResult && (
                   <div className="output show">
-                    <div className="output-label">Your 3 captions - copy your favorite</div>
-                    {contentResult.captions.map((cap, idx) => (
-                      <div className="out-card" key={`${cap.label}-${idx}`}>
-                        <div className="out-tag">Option {idx + 1} - {cap.label}</div>
-                        <div className="out-text">{cap.text}</div>
-                        <div className="out-actions">
-                          <button className="btn btn-outline btn-sm" onClick={() => copyText(cap.text)} type="button">
-                            Copy
-                          </button>
-                        </div>
+                    {contentResult.trend && (
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 999, background: "hsl(var(--primary) / 0.12)", color: "hsl(var(--primary))", fontSize: 12, fontWeight: 600, marginBottom: 10 }}>
+                        🔥 Trend applied: {contentResult.trend.name}
                       </div>
-                    ))}
+                    )}
+                    {(() => {
+                      const isDual =
+                        contentResult.trend?.id === "mil-vs-genz" &&
+                        contentResult.captions.length === 2;
+                      if (isDual) {
+                        return (
+                          <>
+                            <div className="output-label">
+                              Same image, two captions — post them side-by-side
+                            </div>
+                            <div
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns: "1fr 1fr",
+                                gap: 12,
+                                background: "hsl(var(--background))",
+                                border: "1px solid hsl(var(--border))",
+                                borderRadius: 12,
+                                padding: 12,
+                              }}
+                            >
+                               {contentResult.captions.map((cap, idx) => {
+                                 const isGenZ = idx === 1;
+                                 // Decorative emoji stickers overlaid on the Gen Z image
+                                 const stickers = [
+                                   { e: "💅", top: "6%", left: "6%", rot: -12 },
+                                   { e: "✨", top: "8%", right: "8%", rot: 10 },
+                                   { e: "🔥", bottom: "10%", left: "8%", rot: -8 },
+                                   { e: "😭", bottom: "6%", right: "6%", rot: 14 },
+                                 ];
+                                 return (
+                                 <div
+                                   key={`dual-${idx}`}
+                                   style={{
+                                     display: "flex",
+                                     flexDirection: "column",
+                                     gap: 8,
+                                     borderRight:
+                                       idx === 0
+                                         ? "1px solid hsl(var(--border))"
+                                         : "none",
+                                     paddingRight: idx === 0 ? 12 : 0,
+                                     paddingLeft: idx === 1 ? 12 : 0,
+                                   }}
+                                 >
+                                   <div
+                                     style={{
+                                       fontWeight: 700,
+                                       fontSize: 13,
+                                       textAlign: "center",
+                                     }}
+                                   >
+                                     {cap.label}
+                                   </div>
+                                   {generatedImage ? (
+                                     <div style={{ position: "relative", width: "100%" }}>
+                                       <img
+                                         alt="Post visual"
+                                         src={generatedImage}
+                                         style={{
+                                           width: "100%",
+                                           borderRadius: 8,
+                                           objectFit: "cover",
+                                           aspectRatio: "1 / 1",
+                                           display: "block",
+                                         }}
+                                       />
+                                       {isGenZ && stickers.map((s, i) => (
+                                         <span
+                                           key={i}
+                                           style={{
+                                             position: "absolute",
+                                             top: s.top,
+                                             left: s.left,
+                                             right: s.right,
+                                             bottom: s.bottom,
+                                             fontSize: 28,
+                                             lineHeight: 1,
+                                             transform: `rotate(${s.rot}deg)`,
+                                             filter: "drop-shadow(0 2px 4px rgba(0,0,0,.35))",
+                                             pointerEvents: "none",
+                                           }}
+                                         >
+                                           {s.e}
+                                         </span>
+                                       ))}
+                                     </div>
+                                   ) : (
+                                     <div
+                                       style={{
+                                         width: "100%",
+                                         aspectRatio: "1 / 1",
+                                         borderRadius: 8,
+                                         background: "hsl(var(--muted))",
+                                       }}
+                                     />
+                                   )}
+                                   <div
+                                     style={{
+                                       fontSize: 12,
+                                       lineHeight: 1.45,
+                                       textAlign: isGenZ ? "center" : "left",
+                                       fontStyle: isGenZ ? "italic" : "normal",
+                                       flex: 1,
+                                     }}
+                                   >
+                                     {cap.text}
+                                   </div>
+                                   <button
+                                     className="btn btn-outline btn-sm"
+                                     onClick={() => copyText(cap.text)}
+                                     type="button"
+                                   >
+                                     Copy {cap.label.split(" ")[0]} caption
+                                   </button>
+                                 </div>
+                                 );
+                               })}
+                            </div>
+                          </>
+                        );
+                      }
+                      return (
+                        <>
+                          <div className="output-label">
+                            Your {contentResult.captions.length}{" "}
+                            {contentResult.captions.length === 1 ? "caption" : "captions"} - copy your favorite
+                          </div>
+                          {contentResult.captions.map((cap, idx) => (
+                            <div className="out-card" key={`${cap.label}-${idx}`}>
+                              <div className="out-tag">Option {idx + 1} - {cap.label}</div>
+                              <div className="out-text">{cap.text}</div>
+                              <div className="out-actions">
+                                <button className="btn btn-outline btn-sm" onClick={() => copyText(cap.text)} type="button">
+                                  Copy
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      );
+                    })()}
                     <div className="banner banner-tip show">
                       <strong>Post first:</strong> {contentResult.tip}
                     </div>
 
                     <div className="img-gen-section show">
-                      <div className="img-gen-label">Visual content</div>
-                      <div className="gen-mode-row">
-                        <button className={genMode === "ai" ? "gen-mode-pill on" : "gen-mode-pill"} onClick={() => setGenMode("ai")} type="button">
-                          Generate AI image
-                        </button>
-                        <button className={genMode === "tip" ? "gen-mode-pill on" : "gen-mode-pill"} onClick={() => setGenMode("tip")} type="button">
-                          How to shoot it yourself
-                        </button>
+                      <div className="img-gen-label">
+                        {contentResult.trend?.id === "mil-vs-genz"
+                          ? "Source image (used in both panels above)"
+                          : "Generated image"}
                       </div>
-
-                      {genMode === "ai" ? (
+                      {generatedImage ? (
                         <>
-                          <div className="img-prompt-box show">{contentResult.imagePrompt}</div>
-                          <button className="btn btn-primary btn-full" onClick={() => generateImagePreview(contentResult.imagePrompt)} type="button">
-                            Generate food image
+                          <div className="img-result show">
+                            <img alt="Generated food" src={generatedImage} />
+                          </div>
+                          <button
+                            type="button"
+                            className="img-download-btn"
+                            onClick={async () => {
+                              try {
+                                const res = await fetch(generatedImage);
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `${(contentProduct || "food").replace(/\s+/g, "-").toLowerCase()}-image.png`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              } catch {
+                                const a = document.createElement("a");
+                                a.href = generatedImage;
+                                a.download = "food-image.png";
+                                a.target = "_blank";
+                                a.click();
+                              }
+                            }}
+                          >
+                            ↓ Download image
                           </button>
-                          {generatedImage && (
-                            <div className="img-result show">
-                              <img alt="Generated food" src={generatedImage} />
-                            </div>
-                          )}
                         </>
                       ) : (
-                        <div className="photo-tip-box show">
-                          <strong>How to shoot it yourself:</strong> {contentResult.photoTip}
+                        <div className="img-prompt-box show">Image is being prepared…</div>
+                      )}
+                      {contentResult.photoTip && (
+                        <div className="photo-tip-box show" style={{ marginTop: 12 }}>
+                          <strong>Shoot it yourself:</strong> {contentResult.photoTip}
                         </div>
                       )}
                     </div>
@@ -1074,7 +1665,7 @@ function App() {
               <section className={page === "convert" ? "page active" : "page"}>
                 <div className="page-header">
                   <div className="page-eyebrow">
-                    <span className="eyebrow-dot" /> Conversion Kit · Module 3
+                    <span className="eyebrow-dot" /> Conversion Kit
                   </div>
                   <div className="page-title">
                     The right words<br />
@@ -1122,13 +1713,20 @@ function App() {
                   </div>
                 </div>
 
+                {brandSaved && (
+                  <div className="brand-profile-pill">
+                    <span className="brand-profile-pill-dot" />
+                    Using your brand profile
+                  </div>
+                )}
+
                 <button className="btn btn-primary btn-full" onClick={handleGenerateScript} type="button">
                   Generate my script
                 </button>
 
                 <div className={convertLoading ? "loading show" : "loading"}>
                   <div className="spinner" />
-                  <span className="loading-text">Writing your personalized script...</span>
+                  <span className="loading-text">AI is writing your personalized script...</span>
                 </div>
 
                 {scriptResult && (
@@ -1260,6 +1858,7 @@ function App() {
               </section>
             </div>
 
+            {(page === "brand" || page === "content" || page === "convert" || page === "outcomes") && (
             <aside className="right-panel">
               {page === "brand" ? (
                 <>
@@ -1268,47 +1867,53 @@ function App() {
                     <div className="rp-sub" style={{ marginBottom: 10 }}>
                       This updates as you type in Brand Builder.
                     </div>
-                    <div
-                      className="fb-preview"
-                      style={{
-                        borderColor: hexToRgba(previewPrimary, 0.35),
-                        background: hexToRgba(previewBackground, 0.18),
-                      }}
-                    >
-                      <div
-                        className="fb-header"
-                        style={{
-                          borderBottomColor: hexToRgba(previewPrimary, 0.22),
-                          background: hexToRgba(previewBackground, 0.26),
-                        }}
-                      >
+                    <div className="fb-post-mock">
+                      <div className="fb-header">
                         <div className="fb-avatar" style={{ background: previewPrimary }}>
-                          M
+                          {previewName.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <div className="fb-name">{activeBrandProfile.businessName || previewName}</div>
-                          <div className="fb-time">Just now · Public</div>
+                          <div className="fb-name">{previewName}</div>
+                          <div className="fb-time">Just now · 🌐</div>
                         </div>
+                        <span className="fb-more">⋯</span>
+                      </div>
+                      <div className="fb-caption-row">
+                        <span className="fb-caption">{summarize(previewOneLiner, 110)}</span>
+                        <span className="fb-see-more">See more</span>
                       </div>
                       <div
-                        className="fb-body"
+                        className="fb-hero"
                         style={{
-                          background: hexToRgba(previewBackground, 0.2),
-                          borderLeft: `3px solid ${hexToRgba(previewSecondary, 0.8)}`,
+                          background: activeBrandProfile.heroImage
+                            ? "transparent"
+                            : `linear-gradient(135deg, ${hexToRgba(previewBackground, 1)} 0%, ${hexToRgba(previewSecondary, 0.55)} 60%, ${hexToRgba(previewPrimary, 0.85)} 100%)`,
                         }}
                       >
-                        {previewOneLiner}
+                        {activeBrandProfile.heroImage ? (
+                          <img alt="Brand hero" className="fb-hero-img" src={activeBrandProfile.heroImage} />
+                        ) : (
+                          <div className="fb-hero-placeholder">Your hero photo</div>
+                        )}
+                        <div
+                          className="fb-overlay-pill"
+                          style={{ background: previewSecondary, color: contrastText(previewSecondary) }}
+                        >
+                          {previewLocation}
+                        </div>
+                        <div
+                          className="fb-overlay-banner"
+                          style={{ background: previewPrimary, color: contrastText(previewPrimary) }}
+                        >
+                          <div className="fb-overlay-stripe" style={{ background: previewAccent }} />
+                          <div className="fb-overlay-wordmark">{previewName}</div>
+                          <div className="fb-overlay-tagline">{summarize(activeBrandProfile.tagline, 36)}</div>
+                        </div>
                       </div>
-                      <div className="fb-footer" style={{ borderTopColor: hexToRgba(previewPrimary, 0.2) }}>
-                        <span className="fb-action" style={{ color: previewPrimary }}>
-                          Like
-                        </span>
-                        <span className="fb-action" style={{ color: previewPrimary }}>
-                          Comment
-                        </span>
-                        <span className="fb-action" style={{ color: previewPrimary }}>
-                          Share
-                        </span>
+                      <div className="fb-footer">
+                        <span className="fb-action">👍 7</span>
+                        <span className="fb-action">💬 2</span>
+                        <span className="fb-action">↗ 3 shares</span>
                       </div>
                     </div>
                   </div>
@@ -1329,26 +1934,51 @@ function App() {
                 <>
                   <div className="rp-section">
                     <div className="rp-label">Post preview</div>
-                    <div className="fb-preview">
+                    <div className="fb-post-mock">
                       <div className="fb-header">
                         <div className="fb-avatar" style={{ background: previewPrimary }}>
-                          M
+                          {previewName.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <div className="fb-name">{activeBrandProfile.businessName}</div>
-                          <div className="fb-time">Just now · Public</div>
+                          <div className="fb-name">{previewName}</div>
+                          <div className="fb-time">Just now · 🌐</div>
+                        </div>
+                        <span className="fb-more">⋯</span>
+                      </div>
+                      <div className="fb-caption-row">
+                        <span className="fb-caption">
+                          {contentResult ? summarize(contentResult.captions[0].text, 110) : summarize(previewOneLiner, 110)}
+                        </span>
+                        <span className="fb-see-more">See more</span>
+                      </div>
+                      <div
+                        className="fb-hero"
+                        style={{
+                          background: (generatedImage || activeBrandProfile.heroImage)
+                            ? "transparent"
+                            : `linear-gradient(135deg, ${hexToRgba(previewBackground, 1)} 0%, ${hexToRgba(previewSecondary, 0.55)} 60%, ${hexToRgba(previewPrimary, 0.85)} 100%)`,
+                        }}
+                      >
+                        {generatedImage ? (
+                          <img alt="Post preview" className="fb-hero-img" src={generatedImage} />
+                        ) : activeBrandProfile.heroImage ? (
+                          <img alt="Brand hero" className="fb-hero-img" src={activeBrandProfile.heroImage} />
+                        ) : (
+                          <div className="fb-hero-placeholder">Your hero photo</div>
+                        )}
+                        <div className="fb-overlay-pill" style={{ background: previewSecondary, color: contrastText(previewSecondary) }}>
+                          {previewLocation}
+                        </div>
+                        <div className="fb-overlay-banner" style={{ background: previewPrimary, color: contrastText(previewPrimary) }}>
+                          <div className="fb-overlay-stripe" style={{ background: previewAccent }} />
+                          <div className="fb-overlay-wordmark">{previewName}</div>
+                          <div className="fb-overlay-tagline">{summarize(activeBrandProfile.tagline, 36)}</div>
                         </div>
                       </div>
-                      {generatedImage ? (
-                        <img alt="Post preview" className="post-preview-img show" src={generatedImage} />
-                      ) : (
-                        <div className="post-preview-img-placeholder">Your image preview appears here</div>
-                      )}
-                      <div className="fb-body">{contentResult ? summarize(contentResult.captions[0].text, 140) : "Your best caption will appear here after generating..."}</div>
                       <div className="fb-footer">
-                        <span className="fb-action">Like</span>
-                        <span className="fb-action">Comment</span>
-                        <span className="fb-action">Share</span>
+                        <span className="fb-action">👍 7</span>
+                        <span className="fb-action">💬 2</span>
+                        <span className="fb-action">↗ 3 shares</span>
                       </div>
                     </div>
                   </div>
@@ -1427,60 +2057,31 @@ function App() {
                     </div>
                   </div>
                 </>
-              ) : (
-                <>
-                  <div className="rp-section">
-                    <div className="rp-label">Brand snapshot</div>
-                    <div className="rp-brand-card">
-                      <div className="rp-brand-name">{activeBrandProfile.businessName || previewName}</div>
-                      <div className="rp-brand-one">{summarize(activeBrandProfile.oneLiner, 95)}</div>
-                    </div>
-                    <div className="rp-sub">
-                      Voice: <strong style={{ color: "var(--accent-text)" }}>{activeBrandProfile.brandVoice}</strong>
-                    </div>
-                  </div>
-
-                  <div className="rp-section">
-                    <div className="rp-label">Quick actions</div>
-                    <button className="rp-quick-btn" onClick={() => setPage("content")} type="button">
-                      <span className="rp-quick-icon">✦</span> Generate a post now
-                    </button>
-                    <button className="rp-quick-btn" onClick={() => setPage("convert")} type="button">
-                      <span className="rp-quick-icon">◎</span> Get a DM script
-                    </button>
-                    <button className="rp-quick-btn" onClick={() => setPage("brand")} type="button">
-                      <span className="rp-quick-icon">◇</span> Edit brand profile
-                    </button>
-                  </div>
-
-                  <div className="rp-section">
-                    <div className="rp-label">Today's insight</div>
-                    <div className="rp-sub">
-                      MSMEs that post 3-5x per week on Facebook get <strong style={{ color: "var(--accent-text)" }}>2.4x more</strong>{" "}
-                      DM inquiries than pages posting less often.
-                    </div>
-                  </div>
-                </>
-              )}
+              ) : null}
             </aside>
+            )}
           </div>
         </div>
       </div>
-
-      <div className="theme-switcher">
-        <span className="ts-label">Theme</span>
-        <div className="ts-btns">
-          <button className={theme === "light" ? "ts-btn on" : "ts-btn"} onClick={() => setTheme("light")} type="button">
-            Light
-          </button>
-          <button className={theme === "dark" ? "ts-btn on" : "ts-btn"} onClick={() => setTheme("dark")} type="button">
-            Dark
-          </button>
-          <button className={theme === "noir" ? "ts-btn on" : "ts-btn"} onClick={() => setTheme("noir")} type="button">
-            Noir
-          </button>
-        </div>
-      </div>
+      {isMobile && (
+        <MobileTabBar
+          t={t}
+          active={
+            page === "home" ? "home" :
+            page === "news" ? "news" :
+            page === "convert" ? "scripts" :
+            page === "brand" ? "ako" :
+            page === "content" ? "new" : "home"
+          }
+          onSelect={(tab) => {
+            if (tab === "home") setPage("home");
+            else if (tab === "news") setPage("news");
+            else if (tab === "new") setPage("content");
+            else if (tab === "scripts") setPage("convert");
+            else if (tab === "ako") setPage("brand");
+          }}
+        />
+      )}
     </>
   );
 }
